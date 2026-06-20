@@ -55,6 +55,7 @@ async def _send_to_recipient(
     text: str,
     mapper: UserMapper,
     openwa: OpenWAClient,
+    image_url: str = "",
 ) -> None:
     if not recipient.email and not recipient.account_id:
         logger.warning("[%s] skip: empty recipient identity", event)
@@ -70,7 +71,7 @@ async def _send_to_recipient(
         )
         return
 
-    success = await openwa.send_to_phone(phone, text, mapper)
+    success = await openwa.send_to_phone(phone, text, mapper, image_url=image_url)
     status = "success" if success else "fail"
     logger.info("[%s] %s -> %s", event, status, mask_phone(phone))
 
@@ -90,6 +91,7 @@ async def _handle_task_assigned(
         text,
         mapper,
         openwa,
+        image_url=payload.image_url,
     )
 
 
@@ -108,6 +110,7 @@ async def _handle_task_completed(
         text,
         mapper,
         openwa,
+        image_url=payload.image_url,
     )
 
 
@@ -160,4 +163,11 @@ async def _handle_new_comment(
         return
 
     for recipient in recipients:
-        await _send_to_recipient("new_comment", recipient, text, mapper, openwa)
+        await _send_to_recipient(
+            "new_comment",
+            recipient,
+            text,
+            mapper,
+            openwa,
+            image_url=payload.image_url,
+        )

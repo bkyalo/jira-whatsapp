@@ -2,20 +2,22 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
 
+from app.issue_fields import IssueFields
 
-class TaskAssignedPayload(BaseModel):
+
+class TaskAssignedPayload(IssueFields):
     event: Literal["task_assigned"]
     task_id: str
-    title: str
+    title: str = ""
     assigned_to_name: str = ""
     assigned_to_email: str = ""
     assigned_to_account_id: str = ""
 
 
-class TaskCompletedPayload(BaseModel):
+class TaskCompletedPayload(IssueFields):
     event: Literal["task_completed"]
     task_id: str
-    title: str
+    title: str = ""
     created_by_name: str = ""
     created_by_email: str = ""
     created_by_account_id: str = ""
@@ -29,10 +31,10 @@ class InvolvedParties(BaseModel):
     assignee_account_id: str = ""
 
 
-class NewCommentPayload(BaseModel):
+class NewCommentPayload(IssueFields):
     event: Literal["new_comment"]
     task_id: str
-    title: str
+    title: str = ""
     comment_author: str = ""
     comment_author_email: str = ""
     comment_author_account_id: str = ""

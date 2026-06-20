@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     openwa_max_retries: int = 2
     openwa_retry_delay_seconds: float = 1.0
+    # Optional — required to download Jira attachment URLs (Atlassian-hosted images)
+    jira_email: str = ""
+    jira_api_token: str = ""
 
     @property
     def user_map_file(self) -> Path:

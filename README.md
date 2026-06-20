@@ -65,6 +65,59 @@ Health check: `GET http://127.0.0.1:6060/health`
 | `LOG_LEVEL` | `INFO`, `DEBUG`, etc. |
 | `OPENWA_MAX_RETRIES` | Retries on send failure (default: `2`) |
 | `OPENWA_RETRY_DELAY_SECONDS` | Base delay between retries (default: `1.0`) |
+| `JIRA_EMAIL` | Atlassian account email (for downloading attachment images) |
+| `JIRA_API_TOKEN` | [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens) |
+
+## Custom fields & images
+
+All event payloads support these **optional** issue fields:
+
+| JSON field | Jira source | Notes |
+|------------|-------------|--------|
+| `site_name` | `{{issue.customfield_XXXXX}}` | Replace with your Site Name custom field ID |
+| `module` | `{{issue.summary}}` | Your summary = Module name |
+| `description` | `{{issue.description}}` | Plain text / ADF stripped in WhatsApp |
+| `issue_url` | `{{issue.url}}` | Link to the issue |
+| `image_url` | attachment URL (see below) | Sent as WhatsApp image if available |
+
+**Find custom field IDs:** Jira → Settings → Issues → Custom fields → Site Name → … → inspect ID in URL (`customfield_10086`).
+
+**Images:** Jira attachment URLs require auth. Set `JIRA_EMAIL` + `JIRA_API_TOKEN` in `.env`. In Automation, pass the attachment content URL, e.g. from a related lookup or hardcoded pattern:
+
+```json
+"image_url": "https://your-domain.atlassian.net/rest/api/3/attachment/content/ATTACHMENT_ID"
+```
+
+Public image URLs (no Atlassian host) work without Jira credentials.
+
+### Example — task assigned with Site Name, Module, description, image
+
+```json
+{
+  "event": "task_assigned",
+  "task_id": "{{issue.key}}",
+  "module": "{{issue.summary}}",
+  "site_name": "{{issue.customfield_10086}}",
+  "description": "{{issue.description}}",
+  "issue_url": "{{issue.url}}",
+  "image_url": "{{issue.attachment.url}}",
+  "assigned_to_name": "{{issue.assignee.displayName}}",
+  "assigned_to_account_id": "{{issue.assignee.accountId}}"
+}
+```
+
+WhatsApp message example:
+
+```
+📋 Task assigned: PROJ-123
+Assigned to: Ben TITO
+Site: Nairobi HQ
+Module: HVAC maintenance
+Description: Check unit 4 compressor...
+https://yourorg.atlassian.net/browse/PROJ-123
+```
+
+If `image_url` is set and reachable, an image follows the text message.
 
 ## OpenWA setup
 
@@ -249,9 +302,12 @@ Create three rules (or one rule with branching). Each uses **Send web request**:
 {
   "event": "task_assigned",
   "task_id": "{{issue.key}}",
-  "title": "{{issue.summary}}",
+  "module": "{{issue.summary}}",
+  "site_name": "{{issue.customfield_XXXXX}}",
+  "description": "{{issue.description}}",
+  "issue_url": "{{issue.url}}",
+  "image_url": "",
   "assigned_to_name": "{{issue.assignee.displayName}}",
-  "assigned_to_email": "{{issue.assignee.emailAddress}}",
   "assigned_to_account_id": "{{issue.assignee.accountId}}"
 }
 ```
