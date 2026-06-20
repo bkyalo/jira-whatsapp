@@ -289,9 +289,29 @@ Health check: `https://jira.werevu.co.ke/health`
 Create three rules (or one rule with branching). Each uses **Send web request**:
 
 - **Method:** POST
-- **URL:** `https://jira.werevu.co.ke/webhooks/jira`
-- **Header:** `X-Jira-Webhook-Secret: <your secret>`
+- **URL:** `https://jira.werevu.co.ke/webhooks/jira?secret=YOUR_SECRET` (easiest for Jira — see auth below)
 - **Content-Type:** application/json
+
+### Authentication (Jira often skips custom headers)
+
+Jira Automation frequently **does not send** custom headers unless configured exactly. The middleware accepts **any one** of:
+
+| Method | Jira setup |
+|--------|------------|
+| **Query param (recommended for Jira)** | URL: `https://jira.werevu.co.ke/webhooks/jira?secret=YOUR_SECRET` |
+| Header | `X-Jira-Webhook-Secret: YOUR_SECRET` |
+| Bearer | `Authorization: Bearer YOUR_SECRET` |
+
+Jira may append `&triggeredByUser=...` to the URL automatically — that is fine.
+
+**Custom headers in Jira** (if your plan supports it) — add as JSON in the web request action:
+
+```json
+{
+  "Content-Type": "application/json",
+  "X-Jira-Webhook-Secret": "YOUR_SECRET"
+}
+```
 
 ### Rule 1 — Task assigned
 

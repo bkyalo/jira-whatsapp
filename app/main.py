@@ -1,18 +1,18 @@
 import logging
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
+from app.auth import verify_webhook_secret as _verify_secret
 from app.config import Settings, get_settings
 from app.handlers import process_event
 from app.logging_setup import setup_logging
 from app.mapper import UserMapper
 from app.models import JiraWebhookPayload
 from app.openwa_client import OpenWAClient
-from pydantic import TypeAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +42,13 @@ app = FastAPI(
 )
 
 
-def verify_webhook_secret(
-    x_jira_webhook_secret: str | None = Header(default=None, alias="X-Jira-Webhook-Secret"),
-    settings: Settings = Depends(get_settings),
+def require_webhook_secret(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+    x_jira_webhook_secret: Annotated[str | None, Header(alias="X-Jira-Webhook-Secret")] = None,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> None:
-    if not x_jira_webhook_secret or x_jira_webhook_secret != settings.jira_webhook_secret:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing webhook secret",
-        )
+    _verify_secret(request, x_jira_webhook_secret, authorization, settings)
 
 
 def _get_mapper() -> UserMapper:
@@ -68,7 +66,7 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/admin/reload-map", dependencies=[Depends(verify_webhook_secret)])
+@app.post("/admin/reload-map", dependencies=[Depends(require_webhook_secret)])
 async def reload_user_map(user_mapper: UserMapper = Depends(_get_mapper)) -> dict[str, str]:
     user_mapper.reload()
     return {"status": "reloaded"}
@@ -77,7 +75,7 @@ async def reload_user_map(user_mapper: UserMapper = Depends(_get_mapper)) -> dic
 @app.post(
     "/webhooks/jira",
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(verify_webhook_secret)],
+    dependencies=[Depends(require_webhook_secret)],
 )
 async def jira_webhook(
     request: Request,
