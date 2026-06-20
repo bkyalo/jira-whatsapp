@@ -46,10 +46,10 @@ Run the server:
 
 ```bash
 python -m app.main
-# or: uvicorn app.main:app --host 127.0.0.1 --port 8080
+# or: uvicorn app.main:app --host 127.0.0.1 --port 6060
 ```
 
-Health check: `GET http://127.0.0.1:8080/health`
+Health check: `GET http://127.0.0.1:6060/health`
 
 ## Environment variables
 
@@ -61,7 +61,7 @@ Health check: `GET http://127.0.0.1:8080/health`
 | `OPENWA_SESSION_ID` | UUID of the connected WhatsApp session |
 | `USER_MAP_PATH` | Path to email→phone JSON (default: `config/user_map.json`) |
 | `HOST` | Bind address (default: `127.0.0.1`) |
-| `PORT` | Bind port (default: `8080`) |
+| `PORT` | Bind port (default: `6060`) |
 | `LOG_LEVEL` | `INFO`, `DEBUG`, etc. |
 | `OPENWA_MAX_RETRIES` | Retries on send failure (default: `2`) |
 | `OPENWA_RETRY_DELAY_SECONDS` | Base delay between retries (default: `1.0`) |
@@ -105,9 +105,69 @@ curl https://whatsapp.werevu.co.ke/api/sessions/{SESSION_ID} \
 
 On the same VPS as OpenWA, set `OPENWA_BASE_URL=http://127.0.0.1:3000` so traffic stays internal.
 
-## VPS deployment (systemd)
+## VPS deployment
 
-Install on the same server as OpenWA:
+One command on the server — creates **everything**: app directory, venv, `.env`, **systemd service**, **nginx config**, and **TLS cert**.
+
+```bash
+git clone git@github.com:bkyalo/jira-whatsapp.git
+cd jira-whatsapp
+cp .env.example .env && nano .env   # fill in secrets
+sudo CERTBOT_EMAIL=you@werevu.co.ke ./deploy/deploy.sh
+```
+
+### What `deploy/deploy.sh` creates
+
+| Step | What happens |
+|------|----------------|
+| 1 | Installs `python3`, `nginx`, `certbot`, `curl`, `rsync` |
+| 2 | Ensures `www-data` system user exists |
+| 3 | Syncs app → `/opt/jira-webhooks` |
+| 4 | Copies `.env`, sets `PORT=6060` |
+| 5 | Validates `JIRA_WEBHOOK_SECRET`, `OPENWA_API_KEY`, `OPENWA_SESSION_ID` |
+| 6 | Creates Python venv + `pip install` |
+| 7 | Writes `/etc/systemd/system/jira-webhooks.service`, enables & starts it |
+| 8 | Writes nginx site config, requests Let's Encrypt cert, enables HTTPS |
+| 9 | Runs health check on `127.0.0.1:6060` |
+
+**Files written on the server:**
+
+```
+/opt/jira-webhooks/                          # app + venv + .env
+/etc/systemd/system/jira-webhooks.service    # systemd unit (auto-start on boot)
+/etc/nginx/sites-available/jira.werevu.co.ke.conf
+/etc/nginx/sites-enabled/jira.werevu.co.ke.conf -> sites-available
+```
+
+**After deploy — useful commands:**
+
+```bash
+systemctl status jira-webhooks          # is it running?
+journalctl -u jira-webhooks -f          # live logs
+systemctl restart jira-webhooks         # restart after .env change
+curl http://127.0.0.1:6060/health        # local health check
+```
+
+**Redeploy** after `git pull`:
+
+```bash
+sudo CERTBOT_EMAIL=you@werevu.co.ke ./deploy/deploy.sh
+```
+
+**Optional env overrides:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INSTALL_DIR` | `/opt/jira-webhooks` | Install path |
+| `DOMAIN` | `jira.werevu.co.ke` | Public hostname |
+| `APP_PORT` | `6060` | Uvicorn port |
+| `CERTBOT_EMAIL` | — | Email for Let's Encrypt (required for HTTPS on first run) |
+| `SKIP_APT=1` | — | Skip `apt-get install` |
+| `SKIP_CERTBOT=1` | — | HTTP only, no TLS |
+
+### Manual deployment (alternative)
+
+If you prefer to set things up by hand instead of the script:
 
 ```bash
 sudo mkdir -p /opt/jira-webhooks
@@ -130,7 +190,7 @@ Type=simple
 User=www-data
 WorkingDirectory=/opt/jira-webhooks
 EnvironmentFile=/opt/jira-webhooks/.env
-ExecStart=/opt/jira-webhooks/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
+ExecStart=/opt/jira-webhooks/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 6060
 Restart=on-failure
 RestartSec=5
 
@@ -153,40 +213,17 @@ Use a **dedicated subdomain** for this middleware — separate from OpenWA:
 
 | Host | Role |
 |------|------|
-| `jira.werevu.co.ke` | Jira sends webhooks **here** (this Python app) |
+| `jira.werevu.co.ke` | Jira sends webhooks **here** (this Python app on port `6060`) |
 | `whatsapp.werevu.co.ke` | OpenWA only — middleware **calls out** to send messages |
 
-Add a DNS A record for `jira.werevu.co.ke` pointing to the same VPS, then create `/etc/nginx/sites-available/jira-webhooks`:
+A ready-made config is in [`deploy/nginx/jira.werevu.co.ke.conf`](deploy/nginx/jira.werevu.co.ke.conf).
 
-```nginx
-server {
-    listen 80;
-    server_name jira.werevu.co.ke;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name jira.werevu.co.ke;
-
-    ssl_certificate     /etc/letsencrypt/live/jira.werevu.co.ke/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/jira.werevu.co.ke/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-Enable the site and obtain TLS (if not already):
+Add a DNS A record for `jira.werevu.co.ke` pointing to the same VPS, then:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/jira-webhooks /etc/nginx/sites-enabled/
-sudo certbot certonly --nginx -d jira.werevu.co.ke
+sudo cp deploy/nginx/jira.werevu.co.ke.conf /etc/nginx/sites-available/
+sudo ln -sf /etc/nginx/sites-available/jira.werevu.co.ke.conf /etc/nginx/sites-enabled/
+sudo certbot certonly --nginx -d jira.werevu.co.ke   # skip if cert already exists
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -270,7 +307,7 @@ Replace `YOUR_SECRET` with your webhook secret.
 **Task assigned:**
 
 ```bash
-curl -X POST http://127.0.0.1:8080/webhooks/jira \
+curl -X POST http://127.0.0.1:6060/webhooks/jira \
   -H "Content-Type: application/json" \
   -H "X-Jira-Webhook-Secret: YOUR_SECRET" \
   -d '{
@@ -285,7 +322,7 @@ curl -X POST http://127.0.0.1:8080/webhooks/jira \
 **Task completed:**
 
 ```bash
-curl -X POST http://127.0.0.1:8080/webhooks/jira \
+curl -X POST http://127.0.0.1:6060/webhooks/jira \
   -H "Content-Type: application/json" \
   -H "X-Jira-Webhook-Secret: YOUR_SECRET" \
   -d '{
@@ -301,7 +338,7 @@ curl -X POST http://127.0.0.1:8080/webhooks/jira \
 **New comment:**
 
 ```bash
-curl -X POST http://127.0.0.1:8080/webhooks/jira \
+curl -X POST http://127.0.0.1:6060/webhooks/jira \
   -H "Content-Type: application/json" \
   -H "X-Jira-Webhook-Secret: YOUR_SECRET" \
   -d '{

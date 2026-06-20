@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     openwa_session_id: str
     user_map_path: str = "config/user_map.json"
     host: str = "127.0.0.1"
-    port: int = 8080
+    port: int = 6060
     log_level: str = "INFO"
     openwa_max_retries: int = 2
     openwa_retry_delay_seconds: float = 1.0
