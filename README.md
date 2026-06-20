@@ -107,50 +107,45 @@ On the same VPS as OpenWA, set `OPENWA_BASE_URL=http://127.0.0.1:3000` so traffi
 
 ## VPS deployment
 
-One command on the server — creates **everything**: app directory, venv, `.env`, **systemd service**, **nginx config**, and **TLS cert**.
+One command on the server — deploys **in the git clone directory** (path detected from the script, not `/opt`). Creates venv, `.env`, **systemd service**, **nginx config**, and **TLS cert**.
 
 ```bash
 git clone git@github.com:bkyalo/jira-whatsapp.git
 cd jira-whatsapp
-cp .env.example .env && nano .env   # fill in secrets
+cp .env.example .env && nano .env
 sudo CERTBOT_EMAIL=you@werevu.co.ke ./deploy/deploy.sh
 ```
+
+The script resolves the repo path automatically (even when run with `sudo`), runs the service as **your user** (via `$SUDO_USER`), and leaves `.git` owned by you so `git pull` keeps working.
 
 ### What `deploy/deploy.sh` creates
 
 | Step | What happens |
 |------|----------------|
 | 1 | Installs `python3`, `nginx`, `certbot`, `curl`, `rsync` |
-| 2 | Ensures `www-data` system user exists |
-| 3 | Syncs app → `/opt/jira-webhooks` |
-| 4 | Copies `.env`, sets `PORT=6060` |
-| 5 | Validates `JIRA_WEBHOOK_SECRET`, `OPENWA_API_KEY`, `OPENWA_SESSION_ID` |
-| 6 | Creates Python venv + `pip install` |
-| 7 | Writes `/etc/systemd/system/jira-webhooks.service`, enables & starts it |
-| 8 | Writes nginx site config, requests Let's Encrypt cert, enables HTTPS |
-| 9 | Runs health check on `127.0.0.1:6060` |
+| 2 | Verifies app files in the clone directory (no copy to `/opt`) |
+| 3 | Creates `.env` in the repo if missing, sets `PORT=6060` |
+| 4 | Validates `JIRA_WEBHOOK_SECRET`, `OPENWA_API_KEY`, `OPENWA_SESSION_ID` |
+| 5 | Creates `.venv` + `pip install` in the clone directory |
+| 6 | Writes `/etc/systemd/system/jira-webhooks.service` pointing at **your clone path** |
+| 7 | Configures nginx + Let's Encrypt TLS |
+| 8 | Runs health check on `127.0.0.1:6060` |
 
-**Files written on the server:**
+**Files on the server (example: `/home/ubuntu/jira-whatsapp/`):**
 
 ```
-/opt/jira-webhooks/                          # app + venv + .env
-/etc/systemd/system/jira-webhooks.service    # systemd unit (auto-start on boot)
+/home/ubuntu/jira-whatsapp/                  # your git clone (app stays here)
+/home/ubuntu/jira-whatsapp/.venv/            # Python virtualenv
+/home/ubuntu/jira-whatsapp/.env              # secrets
+/etc/systemd/system/jira-webhooks.service    # points at clone path above
 /etc/nginx/sites-available/jira.werevu.co.ke.conf
-/etc/nginx/sites-enabled/jira.werevu.co.ke.conf -> sites-available
 ```
 
-**After deploy — useful commands:**
+**Redeploy after `git pull`:**
 
 ```bash
-systemctl status jira-webhooks          # is it running?
-journalctl -u jira-webhooks -f          # live logs
-systemctl restart jira-webhooks         # restart after .env change
-curl http://127.0.0.1:6060/health        # local health check
-```
-
-**Redeploy** after `git pull`:
-
-```bash
+cd ~/jira-whatsapp
+git pull
 sudo CERTBOT_EMAIL=you@werevu.co.ke ./deploy/deploy.sh
 ```
 
@@ -158,10 +153,11 @@ sudo CERTBOT_EMAIL=you@werevu.co.ke ./deploy/deploy.sh
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `INSTALL_DIR` | `/opt/jira-webhooks` | Install path |
+| `INSTALL_DIR` | repo directory | Override install path (e.g. `/opt/jira-webhooks`) |
 | `DOMAIN` | `jira.werevu.co.ke` | Public hostname |
-| `APP_PORT` | `6060` | Uvicorn port |
-| `CERTBOT_EMAIL` | — | Email for Let's Encrypt (required for HTTPS on first run) |
+| `APP_PORT` | `6060` | App port |
+| `SERVICE_USER` | user who ran `sudo` | systemd run user |
+| `CERTBOT_EMAIL` | — | Let's Encrypt email (required for HTTPS on first run) |
 | `SKIP_APT=1` | — | Skip `apt-get install` |
 | `SKIP_CERTBOT=1` | — | HTTP only, no TLS |
 

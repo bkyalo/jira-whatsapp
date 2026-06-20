@@ -1,35 +1,35 @@
 #!/usr/bin/env bash
 # Full VPS deployment for jira-whatsapp middleware.
 #
-# Creates and configures:
-#   - /opt/jira-webhooks          app + venv + .env
-#   - systemd: jira-webhooks      auto-start on boot
-#   - nginx:  jira.werevu.co.ke    reverse proxy + TLS
+# Deploys from the git clone directory (no copy to /opt unless you set INSTALL_DIR).
+# Works with sudo — repo path is resolved from this script's location, not root's $PWD.
 #
-# Usage (on the VPS, from repo root):
+# Usage (on the VPS):
 #   git clone git@github.com:bkyalo/jira-whatsapp.git
 #   cd jira-whatsapp
 #   cp .env.example .env && nano .env
 #   sudo CERTBOT_EMAIL=you@werevu.co.ke ./deploy/deploy.sh
 #
 # Optional env vars:
-#   INSTALL_DIR=/opt/jira-webhooks
+#   INSTALL_DIR=/other/path     override install path (default: repo directory)
 #   DOMAIN=jira.werevu.co.ke
 #   APP_PORT=6060
-#   SERVICE_USER=www-data
-#   SKIP_APT=1        skip apt install
-#   SKIP_CERTBOT=1    HTTP only, no TLS
+#   SERVICE_USER=ubuntu         override run user (default: user who ran sudo)
+#   SKIP_APT=1                  skip apt install
+#   SKIP_CERTBOT=1              HTTP only, no TLS
 
 set -euo pipefail
 
-INSTALL_DIR="${INSTALL_DIR:-/opt/jira-webhooks}"
-DOMAIN="${DOMAIN:-jira.werevu.co.ke}"
-APP_PORT="${APP_PORT:-6060}"
-SERVICE_USER="${SERVICE_USER:-www-data}"
-CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Default: deploy in the directory where the repo was cloned (not /opt)
+INSTALL_DIR="${INSTALL_DIR:-$REPO_ROOT}"
+DOMAIN="${DOMAIN:-jira.werevu.co.ke}"
+APP_PORT="${APP_PORT:-6060}"
+# When run via sudo, run the app as the invoking user so git pull still works
+SERVICE_USER="${SERVICE_USER:-${SUDO_USER:-www-data}}"
+CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"
 
 NGINX_SITE="${DOMAIN}.conf"
 NGINX_AVAILABLE="/etc/nginx/sites-available/${NGINX_SITE}"
@@ -41,6 +41,10 @@ STEP=0
 log()  { STEP=$((STEP + 1)); printf '\n[%d] %s\n' "$STEP" "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
+
+same_path() {
+  [[ "$(realpath "$1")" == "$(realpath "$2")" ]]
+}
 
 require_root() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
@@ -65,15 +69,27 @@ install_packages() {
 ensure_service_user() {
   log "Ensuring service user exists: ${SERVICE_USER}"
   if ! id "${SERVICE_USER}" &>/dev/null; then
-    useradd --system --no-create-home --shell /usr/sbin/nologin "${SERVICE_USER}"
-    info "Created system user ${SERVICE_USER}"
-  else
-    info "User ${SERVICE_USER} already exists"
+    die "User ${SERVICE_USER} does not exist. Create it or set SERVICE_USER=www-data"
   fi
+  info "Service will run as: ${SERVICE_USER}"
+}
+
+verify_repo_layout() {
+  log "Verifying application at ${INSTALL_DIR}..."
+  for path in app/main.py config/user_map.json requirements.txt; do
+    [[ -f "${INSTALL_DIR}/${path}" ]] || die "Missing ${INSTALL_DIR}/${path}"
+  done
+  info "Found app/, config/, requirements.txt"
 }
 
 sync_app_files() {
-  log "Syncing application to ${INSTALL_DIR}..."
+  if same_path "${INSTALL_DIR}" "${REPO_ROOT}"; then
+    log "Deploying in place at ${INSTALL_DIR} (no file copy)"
+    verify_repo_layout
+    return
+  fi
+
+  log "Copying application to ${INSTALL_DIR}..."
   mkdir -p "${INSTALL_DIR}"
   rsync -a --delete \
     --exclude '.venv' \
@@ -85,7 +101,7 @@ sync_app_files() {
     "${REPO_ROOT}/config" \
     "${REPO_ROOT}/requirements.txt" \
     "${INSTALL_DIR}/"
-  info "Synced: app/, config/, requirements.txt"
+  info "Synced from ${REPO_ROOT}"
 }
 
 setup_env() {
@@ -93,17 +109,13 @@ setup_env() {
 
   if [[ -f "${INSTALL_DIR}/.env" ]]; then
     info "Keeping existing ${INSTALL_DIR}/.env"
-  elif [[ -f "${REPO_ROOT}/.env" ]]; then
-    cp "${REPO_ROOT}/.env" "${INSTALL_DIR}/.env"
-    info "Copied from ${REPO_ROOT}/.env"
-  elif [[ -f "${REPO_ROOT}/.env.example" ]]; then
-    cp "${REPO_ROOT}/.env.example" "${INSTALL_DIR}/.env"
-    info "Copied from .env.example — edit secrets before production use"
+  elif [[ -f "${INSTALL_DIR}/.env.example" ]]; then
+    cp "${INSTALL_DIR}/.env.example" "${INSTALL_DIR}/.env"
+    info "Created from .env.example — edit secrets before production use"
   else
-    die "No .env or .env.example found in ${REPO_ROOT}"
+    die "No .env or .env.example in ${INSTALL_DIR}"
   fi
 
-  # Ensure PORT matches deploy setting
   if grep -q '^PORT=' "${INSTALL_DIR}/.env"; then
     sed -i "s/^PORT=.*/PORT=${APP_PORT}/" "${INSTALL_DIR}/.env"
   else
@@ -148,13 +160,23 @@ setup_venv() {
   fi
   sudo -u "${SERVICE_USER}" "${INSTALL_DIR}/.venv/bin/pip" install -q --upgrade pip
   sudo -u "${SERVICE_USER}" "${INSTALL_DIR}/.venv/bin/pip" install -q -r "${INSTALL_DIR}/requirements.txt"
-  info "Dependencies installed from requirements.txt"
+  info "Dependencies installed"
 }
 
 fix_permissions() {
-  log "Setting ownership on ${INSTALL_DIR}..."
-  chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
-  info "Owner: ${SERVICE_USER}:${SERVICE_USER}"
+  log "Setting permissions on ${INSTALL_DIR}..."
+
+  if same_path "${INSTALL_DIR}" "${REPO_ROOT}"; then
+    # In-place deploy: only take ownership of runtime files, leave .git for the developer
+    chown -R "${SERVICE_USER}:${SERVICE_USER}" \
+      "${INSTALL_DIR}/.venv" \
+      "${INSTALL_DIR}/.env" \
+      "${INSTALL_DIR}/config"
+    info "In-place deploy — .git left owned by you; .venv/.env/config owned by ${SERVICE_USER}"
+  else
+    chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
+    info "Owner: ${SERVICE_USER}:${SERVICE_USER}"
+  fi
 }
 
 install_systemd() {
@@ -164,9 +186,10 @@ install_systemd() {
     -e "s|__SERVICE_USER__|${SERVICE_USER}|g" \
     "${SCRIPT_DIR}/systemd/jira-webhooks.service" > "${SYSTEMD_UNIT}"
 
-  info "Template: deploy/systemd/jira-webhooks.service"
-  info "ExecStart: ${INSTALL_DIR}/.venv/bin/python -m app.main"
-  info "EnvironmentFile: ${INSTALL_DIR}/.env"
+  info "WorkingDirectory: ${INSTALL_DIR}"
+  info "ExecStart:        ${INSTALL_DIR}/.venv/bin/python -m app.main"
+  info "EnvironmentFile:  ${INSTALL_DIR}/.env"
+  info "User:             ${SERVICE_USER}"
 
   systemctl daemon-reload
   systemctl enable jira-webhooks
@@ -183,7 +206,6 @@ copy_nginx_config() {
     "${src}" > "${NGINX_AVAILABLE}"
   ln -sf "${NGINX_AVAILABLE}" "${NGINX_ENABLED}"
   info "Installed: ${NGINX_AVAILABLE}"
-  info "Enabled:   ${NGINX_ENABLED}"
   nginx -t
   systemctl reload nginx
   info "Nginx reloaded"
@@ -254,10 +276,15 @@ print_summary() {
  Deployment complete
 ================================================================================
 
+ Paths (resolved automatically — no /opt copy unless you set INSTALL_DIR)
+   Repository:    ${REPO_ROOT}
+   Install dir:   ${INSTALL_DIR}
+   Service user:  ${SERVICE_USER}
+
  Files
-   App:           ${INSTALL_DIR}
    Environment:   ${INSTALL_DIR}/.env
    User map:      ${INSTALL_DIR}/config/user_map.json
+   Virtualenv:    ${INSTALL_DIR}/.venv
 
  Systemd
    Unit file:     ${SYSTEMD_UNIT}
@@ -267,23 +294,23 @@ print_summary() {
 
  Nginx
    Config:        ${NGINX_AVAILABLE}
-   Test config:   nginx -t
-   Reload:        systemctl reload nginx
 
  URLs
    Health:        https://${DOMAIN}/health
    Webhook:       https://${DOMAIN}/webhooks/jira
-   Reload map:    POST https://${DOMAIN}/admin/reload-map
 
- Jira Automation header:
-   X-Jira-Webhook-Secret: (value from ${INSTALL_DIR}/.env)
+ Redeploy after git pull (from ${INSTALL_DIR}):
+   git pull && sudo CERTBOT_EMAIL=${CERTBOT_EMAIL:-you@example.com} ./deploy/deploy.sh
 
 ================================================================================
 EOF
 }
 
 main() {
-  printf 'Deploying jira-whatsapp from %s\n' "${REPO_ROOT}"
+  printf 'Deploying jira-whatsapp\n'
+  info "Repository:  ${REPO_ROOT}"
+  info "Install dir:   ${INSTALL_DIR}"
+  info "Service user:  ${SERVICE_USER}"
   require_root
   install_packages
   ensure_service_user
