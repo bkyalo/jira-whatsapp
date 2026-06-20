@@ -67,6 +67,39 @@ Health check: `GET http://127.0.0.1:6060/health`
 | `OPENWA_RETRY_DELAY_SECONDS` | Base delay between retries (default: `1.0`) |
 | `JIRA_EMAIL` | Atlassian account email (for downloading attachment images) |
 | `JIRA_API_TOKEN` | [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens) |
+| `WEBHOOK_PAYLOAD_LOG` | File path for incoming Jira payload debug log (default: `logs/jira_payloads.jsonl`, empty = off) |
+
+## Logs
+
+**Service logs** (systemd):
+
+```bash
+journalctl -u jira-webhooks -f
+```
+
+Each WhatsApp delivery:
+
+```
+[task_assigned] success -> +2547***5678
+```
+
+**Jira payload debug file** — every webhook Jira sends is appended to `logs/jira_payloads.jsonl` (one JSON object per line):
+
+```bash
+tail -f ~/jira-whatsapp/logs/jira_payloads.jsonl
+# pretty-print last entry:
+tail -1 logs/jira_payloads.jsonl | python3 -m json.tool
+```
+
+Each entry includes:
+- `raw` — exactly what Jira POSTed in the body
+- `normalized` — after our adapter (query `event`, nested `issue`, etc.)
+- `query` — URL params (`secret` redacted)
+- `status` — `accepted`, `rejected_validation`, or `rejected_invalid_json`
+
+Disable file logging: set `WEBHOOK_PAYLOAD_LOG=` (empty) in `.env` and restart.
+
+API keys are never logged. Unmapped emails log `no_mapping_for_email`.
 
 ## Custom fields & images
 
@@ -436,16 +469,6 @@ Expected response: `202` with `{"status":"accepted"}`. Check server logs for del
 | `/health` | GET | None | Liveness check |
 | `/webhooks/jira` | POST | `X-Jira-Webhook-Secret` | Receive Jira events |
 | `/admin/reload-map` | POST | `X-Jira-Webhook-Secret` | Reload `user_map.json` without restart |
-
-## Logs
-
-Each delivery is logged as:
-
-```
-[task_assigned] success -> +2547***5678
-```
-
-API keys are never logged. Unmapped emails log `no_mapping_for_email`.
 
 ## Project layout
 

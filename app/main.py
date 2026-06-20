@@ -14,6 +14,7 @@ from app.mapper import UserMapper
 from app.models import JiraWebhookPayload
 from app.openwa_client import OpenWAClient
 from app.payload_normalize import normalize_jira_payload
+from app.webhook_payload_log import WebhookPayloadLogger
 
 logger = logging.getLogger(__name__)
 
@@ -27,15 +28,17 @@ UNPROCESSABLE = getattr(
 
 mapper: UserMapper | None = None
 openwa_client: OpenWAClient | None = None
+payload_logger: WebhookPayloadLogger | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global mapper, openwa_client
+    global mapper, openwa_client, payload_logger
     settings = get_settings()
     setup_logging(settings.log_level)
     mapper = UserMapper(settings.user_map_file)
     openwa_client = OpenWAClient(settings)
+    payload_logger = WebhookPayloadLogger(settings.webhook_payload_log_file)
     logger.info("Jira-WhatsApp middleware started")
     yield
     logger.info("Jira-WhatsApp middleware stopped")
@@ -90,35 +93,76 @@ async def jira_webhook(
     user_mapper: UserMapper = Depends(_get_mapper),
     client: OpenWAClient = Depends(_get_openwa),
 ) -> JSONResponse:
+    query = dict(request.query_params)
+    client_ip = request.client.host if request.client else None
+    raw_payload: dict[str, Any]
+
     try:
-        payload: dict[str, Any] = await request.json()
+        body = await request.json()
+        if not isinstance(body, dict):
+            if payload_logger:
+                payload_logger.write(
+                    raw_payload={"_non_object_body": body},
+                    normalized_payload={},
+                    query_params=query,
+                    client_ip=client_ip,
+                    status="rejected_invalid_body",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="JSON body must be an object",
+            )
+        raw_payload = body
+    except HTTPException:
+        raise
     except Exception:
+        if payload_logger:
+            payload_logger.write(
+                raw_payload={"_error": "invalid_json"},
+                normalized_payload={},
+                query_params=query,
+                client_ip=client_ip,
+                status="rejected_invalid_json",
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid JSON body",
         )
 
-    if not isinstance(payload, dict):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="JSON body must be an object",
-        )
-
-    payload = normalize_jira_payload(payload, dict(request.query_params))
+    normalized = normalize_jira_payload(raw_payload, query)
 
     try:
-        _payload_adapter.validate_python(payload)
+        _payload_adapter.validate_python(normalized)
     except ValidationError as exc:
+        errors = exc.errors()
         logger.error(
             "Webhook validation failed: %s payload_keys=%s event=%s task_id=%s",
-            exc.errors(),
-            list(payload.keys()),
-            payload.get("event"),
-            payload.get("task_id"),
+            errors,
+            list(normalized.keys()),
+            normalized.get("event"),
+            normalized.get("task_id"),
         )
-        raise HTTPException(status_code=UNPROCESSABLE, detail=exc.errors())
+        if payload_logger:
+            payload_logger.write(
+                raw_payload=raw_payload,
+                normalized_payload=normalized,
+                query_params=query,
+                client_ip=client_ip,
+                status="rejected_validation",
+                validation_errors=errors,
+            )
+        raise HTTPException(status_code=UNPROCESSABLE, detail=errors)
 
-    background_tasks.add_task(process_event, payload, user_mapper, client)
+    if payload_logger:
+        payload_logger.write(
+            raw_payload=raw_payload,
+            normalized_payload=normalized,
+            query_params=query,
+            client_ip=client_ip,
+            status="accepted",
+        )
+
+    background_tasks.add_task(process_event, normalized, user_mapper, client)
     return JSONResponse(content={"status": "accepted"}, status_code=status.HTTP_202_ACCEPTED)
 
 

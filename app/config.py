@@ -24,10 +24,18 @@ class Settings(BaseSettings):
     # Optional — required to download Jira attachment URLs (Atlassian-hosted images)
     jira_email: str = ""
     jira_api_token: str = ""
+    # Append each Jira webhook to this file (JSON lines). Empty = disabled.
+    webhook_payload_log: str = "logs/jira_payloads.jsonl"
 
     @property
     def user_map_file(self) -> Path:
         return Path(self.user_map_path)
+
+    @property
+    def webhook_payload_log_file(self) -> Path | None:
+        if not self.webhook_payload_log.strip():
+            return None
+        return Path(self.webhook_payload_log)
 
 
 @lru_cache
