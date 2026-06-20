@@ -298,7 +298,7 @@ Jira Automation frequently **does not send** custom headers unless configured ex
 
 | Method | Jira setup |
 |--------|------------|
-| **Query param (recommended for Jira)** | URL: `https://jira.werevu.co.ke/webhooks/jira?secret=YOUR_SECRET` |
+| **Query param (recommended for Jira)** | URL: `https://jira.werevu.co.ke/webhooks/jira?secret=YOUR_SECRET&event=task_assigned` |
 | Header | `X-Jira-Webhook-Secret: YOUR_SECRET` |
 | Bearer | `Authorization: Bearer YOUR_SECRET` |
 

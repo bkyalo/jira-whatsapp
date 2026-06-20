@@ -1,8 +1,10 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class IssueFields(BaseModel):
     """Shared Jira issue context sent by Automation webhooks."""
+
+    model_config = ConfigDict(extra="ignore")
 
     site_name: str = ""
     module: str = Field(default="", description="Jira summary — your Module field")

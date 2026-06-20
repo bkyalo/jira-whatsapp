@@ -13,10 +13,17 @@ from app.logging_setup import setup_logging
 from app.mapper import UserMapper
 from app.models import JiraWebhookPayload
 from app.openwa_client import OpenWAClient
+from app.payload_normalize import normalize_jira_payload
 
 logger = logging.getLogger(__name__)
 
 _payload_adapter: TypeAdapter[JiraWebhookPayload] = TypeAdapter(JiraWebhookPayload)
+
+UNPROCESSABLE = getattr(
+    status,
+    "HTTP_422_UNPROCESSABLE_CONTENT",
+    status.HTTP_422_UNPROCESSABLE_ENTITY,
+)
 
 mapper: UserMapper | None = None
 openwa_client: OpenWAClient | None = None
@@ -91,13 +98,25 @@ async def jira_webhook(
             detail="Invalid JSON body",
         )
 
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="JSON body must be an object",
+        )
+
+    payload = normalize_jira_payload(payload, dict(request.query_params))
+
     try:
         _payload_adapter.validate_python(payload)
     except ValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=exc.errors(),
+        logger.error(
+            "Webhook validation failed: %s payload_keys=%s event=%s task_id=%s",
+            exc.errors(),
+            list(payload.keys()),
+            payload.get("event"),
+            payload.get("task_id"),
         )
+        raise HTTPException(status_code=UNPROCESSABLE, detail=exc.errors())
 
     background_tasks.add_task(process_event, payload, user_mapper, client)
     return JSONResponse(content={"status": "accepted"}, status_code=status.HTTP_202_ACCEPTED)

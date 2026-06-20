@@ -1,13 +1,13 @@
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.issue_fields import IssueFields
 
 
 class TaskAssignedPayload(IssueFields):
     event: Literal["task_assigned"]
-    task_id: str
+    task_id: str = Field(min_length=1)
     title: str = ""
     assigned_to_name: str = ""
     assigned_to_email: str = ""
@@ -16,7 +16,7 @@ class TaskAssignedPayload(IssueFields):
 
 class TaskCompletedPayload(IssueFields):
     event: Literal["task_completed"]
-    task_id: str
+    task_id: str = Field(min_length=1)
     title: str = ""
     created_by_name: str = ""
     created_by_email: str = ""
@@ -25,6 +25,8 @@ class TaskCompletedPayload(IssueFields):
 
 
 class InvolvedParties(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     creator_email: str = ""
     creator_account_id: str = ""
     assignee_email: str = ""
@@ -33,7 +35,7 @@ class InvolvedParties(BaseModel):
 
 class NewCommentPayload(IssueFields):
     event: Literal["new_comment"]
-    task_id: str
+    task_id: str = Field(min_length=1)
     title: str = ""
     comment_author: str = ""
     comment_author_email: str = ""
